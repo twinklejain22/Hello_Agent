@@ -30,6 +30,19 @@ Give your final answer in plain, simple English. Always quote the actual value(s
 If a question cannot be answered from the available data, respond with: "I cannot find this information in the provided data."
 """
 
+def build_data_map_prefix(names):
+    """Builds a system prompt prefix that maps each dataframe index to its filename,
+    so the agent can route multi-file questions to the right dataframe faster."""
+    lines = [SYSTEM_PROMPT, "\nYou have access to the following DataFrames:"]
+    for i, name in enumerate(names):
+        lines.append(f"- df{i + 1}: {name}")
+    lines.append(
+        "\nWhen answering, first reason about which DataFrame is most relevant to the "
+        "question, then inspect only that one. Use flexible string matching "
+        "(e.g. .str.contains('keyword', case=False)) rather than requiring exact matches."
+    )
+    return "\n".join(lines)
+
 # ---- Page setup ----
 st.set_page_config(page_title="Chat With Your CSV", layout="wide")
 
@@ -81,12 +94,14 @@ if uploaded_files:
 # ---- Question input ----
 st.subheader("Ask a question about your data")
 
-# Let the user choose which file to query (fixes agent confusion with multiple files)
+# Let the user choose which file to query, or search across all of them
 selected_file = None
 selected_df = None
 if filenames:
-    selected_file = st.selectbox("Which file do you want to ask about?", filenames)
-    selected_df = dataframes[filenames.index(selected_file)]
+    file_options = ["All files"] + filenames
+    selected_file = st.selectbox("Which file do you want to ask about?", file_options)
+    if selected_file != "All files":
+        selected_df = dataframes[filenames.index(selected_file)]
 
 user_question = st.text_area("Your question", placeholder="e.g. What is the average value in column X?")
 
@@ -110,18 +125,31 @@ if st.button("Get Answer"):
                 temperature=0  # low temperature so answers are stable
             )
 
+            # Querying a single file: pass just that dataframe with the plain system prompt.
+            # Querying "All files": pass the full list with a data-map prefix so the agent
+            # can reason about which dataframe is relevant before inspecting it.
+            if selected_df is not None:
+                agent_input = selected_df
+                agent_prefix = SYSTEM_PROMPT
+            else:
+                agent_input = dataframes
+                agent_prefix = build_data_map_prefix(filenames)
+
             agent = create_pandas_dataframe_agent(
                 llm,
-                selected_df,               # only the chosen dataframe, not all of them
+                agent_input,
                 verbose=True,
-                allow_dangerous_code=True, # permission to run pandas operations
-                max_iterations=30,         # give it more steps before giving up
-                max_execution_time=60,     # seconds, generous timeout
-                handle_parsing_errors=True # don't crash on a malformed intermediate step
+                agent_type="openai-tools",   # more stable at deciding when to call pandas
+                prefix=agent_prefix,
+                include_df_in_prompt=True,   # ensures the agent sees column names
+                allow_dangerous_code=True,   # permission to run pandas operations
+                max_iterations=30,           # give it more steps before giving up
+                max_execution_time=60,       # seconds, generous timeout
+                handle_parsing_errors=True   # don't crash on a malformed intermediate step
             )
 
             # ---- Step 7: Combine system prompt + user question into one final query ----
-            final_query = f"{SYSTEM_PROMPT}\n\nQuestion: {user_question}"
+            final_query = f"{agent_prefix}\n\nQuestion: {user_question}"
 
             try:
                 response = agent.invoke(final_query)
