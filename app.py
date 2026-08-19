@@ -80,6 +80,14 @@ if uploaded_files:
 
 # ---- Question input ----
 st.subheader("Ask a question about your data")
+
+# Let the user choose which file to query (fixes agent confusion with multiple files)
+selected_file = None
+selected_df = None
+if filenames:
+    selected_file = st.selectbox("Which file do you want to ask about?", filenames)
+    selected_df = dataframes[filenames.index(selected_file)]
+
 user_question = st.text_area("Your question", placeholder="e.g. What is the average value in column X?")
 
 # ---- Answer section ----
@@ -104,7 +112,7 @@ if st.button("Get Answer"):
 
             agent = create_pandas_dataframe_agent(
                 llm,
-                dataframes,               # list of dataframes passed to the agent
+                selected_df,               # only the chosen dataframe, not all of them
                 verbose=True,
                 allow_dangerous_code=True, # permission to run pandas operations
                 max_iterations=30,         # give it more steps before giving up
@@ -118,5 +126,6 @@ if st.button("Get Answer"):
             try:
                 response = agent.invoke(final_query)
                 answer_placeholder.success(response["output"])
+                st.caption(f"Answer generated from: {selected_file}")
             except Exception as e:
                 answer_placeholder.error(f"Something went wrong: {e}")
